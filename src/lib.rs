@@ -133,7 +133,7 @@ pub struct AgentDeps {
     pub memory_search: Arc<memory::MemorySearch>,
     pub llm_manager: Arc<llm::LlmManager>,
     pub tool_server: rig::tool::server::ToolServerHandle,
-    pub routing: llm::RoutingConfig,
+    pub runtime_config: Arc<config::RuntimeConfig>,
     pub event_tx: tokio::sync::broadcast::Sender<ProcessEvent>,
     pub sqlite_pool: sqlx::SqlitePool,
 }
@@ -141,6 +141,11 @@ pub struct AgentDeps {
 impl AgentDeps {
     pub fn memory_search(&self) -> &Arc<memory::MemorySearch> { &self.memory_search }
     pub fn llm_manager(&self) -> &Arc<llm::LlmManager> { &self.llm_manager }
+
+    /// Load the current routing config snapshot.
+    pub fn routing(&self) -> arc_swap::Guard<Arc<llm::RoutingConfig>> {
+        self.runtime_config.routing.load()
+    }
 }
 
 /// A running agent instance with all its isolated resources.
@@ -149,9 +154,6 @@ pub struct Agent {
     pub config: config::ResolvedAgentConfig,
     pub db: db::Db,
     pub deps: AgentDeps,
-    pub prompts: identity::Prompts,
-    pub identity: identity::Identity,
-    pub skills: Arc<skills::SkillSet>,
 }
 
 /// Inbound message from any messaging platform.

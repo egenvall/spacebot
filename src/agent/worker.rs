@@ -164,9 +164,10 @@ impl Worker {
             self.screenshot_dir.clone(),
         );
 
-        let model_name = self.deps.routing.resolve(ProcessType::Worker, None).to_string();
+        let routing = self.deps.runtime_config.routing.load();
+        let model_name = routing.resolve(ProcessType::Worker, None).to_string();
         let model = SpacebotModel::make(&self.deps.llm_manager, &model_name)
-            .with_routing(self.deps.routing.clone());
+            .with_routing((**routing).clone());
 
         let agent = AgentBuilder::new(model)
             .preamble(&self.system_prompt)
@@ -277,7 +278,7 @@ impl Worker {
     /// by summarizing older tool calls and results into a condensed recap.
     /// No LLM call, just programmatic truncation with a summary marker.
     async fn maybe_compact_history(&self, history: &mut Vec<rig::message::Message>) {
-        let context_window = 128_000; // TODO: pull from config
+        let context_window = **self.deps.runtime_config.context_window.load();
         let estimated = estimate_history_tokens(history);
         let usage = estimated as f32 / context_window as f32;
 

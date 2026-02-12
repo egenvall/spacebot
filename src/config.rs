@@ -3,9 +3,11 @@
 use crate::error::{ConfigError, Result};
 use crate::llm::routing::RoutingConfig;
 use anyhow::Context as _;
+use arc_swap::ArcSwap;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Top-level Spacebot configuration.
 #[derive(Debug, Clone)]
@@ -828,4 +830,256 @@ impl Config {
     pub fn skills_dir(&self) -> PathBuf {
         self.instance_dir.join("skills")
     }
+}
+
+/// Live configuration that can be hot-reloaded without restarting.
+///
+/// All fields use ArcSwap for lock-free reads. Consumers call `.load()` on
+/// individual fields to get a snapshot — cheap and contention-free.
+/// The file watcher calls `.store()` to atomically swap in new values.
+pub struct RuntimeConfig {
+    pub routing: ArcSwap<RoutingConfig>,
+    pub compaction: ArcSwap<CompactionConfig>,
+    pub max_turns: ArcSwap<usize>,
+    pub context_window: ArcSwap<usize>,
+    pub max_concurrent_branches: ArcSwap<usize>,
+    pub browser_config: ArcSwap<BrowserConfig>,
+    pub prompts: ArcSwap<crate::identity::Prompts>,
+    pub identity: ArcSwap<crate::identity::Identity>,
+    pub skills: ArcSwap<crate::skills::SkillSet>,
+}
+
+impl RuntimeConfig {
+    /// Build from a resolved agent config, loaded prompts, identity, and skills.
+    pub fn new(
+        agent_config: &ResolvedAgentConfig,
+        prompts: crate::identity::Prompts,
+        identity: crate::identity::Identity,
+        skills: crate::skills::SkillSet,
+    ) -> Self {
+        Self {
+            routing: ArcSwap::from_pointee(agent_config.routing.clone()),
+            compaction: ArcSwap::from_pointee(agent_config.compaction),
+            max_turns: ArcSwap::from_pointee(agent_config.max_turns),
+            context_window: ArcSwap::from_pointee(agent_config.context_window),
+            max_concurrent_branches: ArcSwap::from_pointee(agent_config.max_concurrent_branches),
+            browser_config: ArcSwap::from_pointee(agent_config.browser.clone()),
+            prompts: ArcSwap::from_pointee(prompts),
+            identity: ArcSwap::from_pointee(identity),
+            skills: ArcSwap::from_pointee(skills),
+        }
+    }
+
+    /// Reload tunable config values from a freshly parsed Config.
+    ///
+    /// Finds the matching agent by ID, re-resolves it against defaults, and
+    /// swaps all reloadable fields. Ignores values that require a restart
+    /// (API keys, DB paths, messaging adapters, agent topology).
+    pub fn reload_config(&self, config: &Config, agent_id: &str) {
+        let agent = config.agents.iter().find(|a| a.id == agent_id);
+        let Some(agent) = agent else {
+            tracing::warn!(agent_id, "agent not found in reloaded config, skipping");
+            return;
+        };
+
+        let resolved = agent.resolve(&config.instance_dir, &config.defaults);
+
+        self.routing.store(Arc::new(resolved.routing));
+        self.compaction.store(Arc::new(resolved.compaction));
+        self.max_turns.store(Arc::new(resolved.max_turns));
+        self.context_window.store(Arc::new(resolved.context_window));
+        self.max_concurrent_branches
+            .store(Arc::new(resolved.max_concurrent_branches));
+        self.browser_config.store(Arc::new(resolved.browser));
+
+        tracing::info!(agent_id, "runtime config reloaded");
+    }
+
+    /// Reload prompts from disk.
+    pub fn reload_prompts(&self, prompts: crate::identity::Prompts) {
+        self.prompts.store(Arc::new(prompts));
+        tracing::info!("prompts reloaded");
+    }
+
+    /// Reload identity files from disk.
+    pub fn reload_identity(&self, identity: crate::identity::Identity) {
+        self.identity.store(Arc::new(identity));
+        tracing::info!("identity reloaded");
+    }
+
+    /// Reload skills from disk.
+    pub fn reload_skills(&self, skills: crate::skills::SkillSet) {
+        self.skills.store(Arc::new(skills));
+        tracing::info!("skills reloaded");
+    }
+}
+
+impl std::fmt::Debug for RuntimeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeConfig").finish_non_exhaustive()
+    }
+}
+
+/// Watches config, prompt, identity, and skill files for changes and triggers
+/// hot reload on the corresponding RuntimeConfig.
+///
+/// Returns a JoinHandle that runs until dropped. File events are debounced
+/// to 2 seconds so rapid edits (e.g. :w in vim hitting multiple writes) are
+/// collapsed into a single reload.
+pub fn spawn_file_watcher(
+    config_path: PathBuf,
+    instance_dir: PathBuf,
+    agents: Vec<(String, PathBuf, Arc<RuntimeConfig>)>,
+) -> tokio::task::JoinHandle<()> {
+    use notify::{Event, RecursiveMode, Watcher};
+    use std::time::Duration;
+
+    tokio::task::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+
+        let mut watcher = match notify::recommended_watcher(
+            move |result: std::result::Result<Event, notify::Error>| {
+                if let Ok(event) = result {
+                    let _ = tx.send(event);
+                }
+            },
+        ) {
+            Ok(w) => w,
+            Err(error) => {
+                tracing::error!(%error, "failed to create file watcher");
+                return;
+            }
+        };
+
+        // Watch config.toml
+        if let Err(error) = watcher.watch(&config_path, RecursiveMode::NonRecursive) {
+            tracing::warn!(%error, path = %config_path.display(), "failed to watch config file");
+        }
+
+        // Watch shared prompts directory
+        let shared_prompts_dir = instance_dir.join("prompts");
+        if shared_prompts_dir.is_dir() {
+            if let Err(error) = watcher.watch(&shared_prompts_dir, RecursiveMode::Recursive) {
+                tracing::warn!(%error, path = %shared_prompts_dir.display(), "failed to watch prompts dir");
+            }
+        }
+
+        // Watch instance-level skills directory
+        let instance_skills_dir = instance_dir.join("skills");
+        if instance_skills_dir.is_dir() {
+            if let Err(error) = watcher.watch(&instance_skills_dir, RecursiveMode::Recursive) {
+                tracing::warn!(%error, path = %instance_skills_dir.display(), "failed to watch instance skills dir");
+            }
+        }
+
+        // Watch per-agent workspace directories (prompts, identity, skills)
+        for (_, workspace, _) in &agents {
+            for subdir in &["prompts", "skills"] {
+                let path = workspace.join(subdir);
+                if path.is_dir() {
+                    if let Err(error) = watcher.watch(&path, RecursiveMode::Recursive) {
+                        tracing::warn!(%error, path = %path.display(), "failed to watch agent dir");
+                    }
+                }
+            }
+            // Identity files are in the workspace root
+            if let Err(error) = watcher.watch(workspace, RecursiveMode::NonRecursive) {
+                tracing::warn!(%error, path = %workspace.display(), "failed to watch workspace");
+            }
+        }
+
+        tracing::info!("file watcher started");
+
+        // Debounce loop: collect events for 2 seconds, then reload
+        let debounce = Duration::from_secs(2);
+
+        loop {
+            // Block until the first event arrives
+            let first = match rx.recv() {
+                Ok(event) => event,
+                Err(_) => break,
+            };
+
+            // Drain any additional events within the debounce window
+            let mut changed_paths: Vec<PathBuf> = first.paths;
+            while let Ok(event) = rx.recv_timeout(debounce) {
+                changed_paths.extend(event.paths);
+            }
+
+            // Categorize what changed
+            let config_changed = changed_paths.iter().any(|p| p.ends_with("config.toml"));
+            let prompts_changed = changed_paths.iter().any(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("md")
+                    && p.to_string_lossy().contains("prompts")
+            });
+            let identity_changed = changed_paths.iter().any(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                matches!(name, "SOUL.md" | "IDENTITY.md" | "USER.md")
+            });
+            let skills_changed = changed_paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("skills"));
+
+            let changed_summary: Vec<&str> = [
+                config_changed.then_some("config"),
+                prompts_changed.then_some("prompts"),
+                identity_changed.then_some("identity"),
+                skills_changed.then_some("skills"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            tracing::info!(
+                changed = %changed_summary.join(", "),
+                "file change detected, reloading"
+            );
+
+            // Reload config.toml if it changed
+            let new_config = if config_changed {
+                match Config::load_from_path(&config_path) {
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        tracing::error!(%error, "failed to reload config.toml, keeping previous values");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Apply reloads to each agent's RuntimeConfig
+            for (agent_id, workspace, runtime_config) in &agents {
+                if let Some(config) = &new_config {
+                    runtime_config.reload_config(config, agent_id);
+                }
+
+                if prompts_changed {
+                    let prompts_dir = instance_dir.join("prompts");
+                    let rt = tokio::runtime::Handle::current();
+                    match rt.block_on(crate::identity::Prompts::load(workspace, &prompts_dir)) {
+                        Ok(prompts) => runtime_config.reload_prompts(prompts),
+                        Err(error) => tracing::error!(%error, agent_id, "failed to reload prompts"),
+                    }
+                }
+
+                if identity_changed {
+                    let rt = tokio::runtime::Handle::current();
+                    let identity = rt.block_on(crate::identity::Identity::load(workspace));
+                    runtime_config.reload_identity(identity);
+                }
+
+                if skills_changed {
+                    let rt = tokio::runtime::Handle::current();
+                    let skills = rt.block_on(crate::skills::SkillSet::load(
+                        &instance_dir.join("skills"),
+                        &workspace.join("skills"),
+                    ));
+                    runtime_config.reload_skills(skills);
+                }
+            }
+        }
+
+        tracing::info!("file watcher stopped");
+    })
 }

@@ -4,11 +4,9 @@
 //! spawns compaction workers when thresholds are crossed. The LLM work (summarization
 //! + memory extraction) happens in the spawned worker, not here.
 
-use crate::config::CompactionConfig;
 use crate::conversation::ConversationLogger;
 use crate::error::Result;
 use crate::llm::SpacebotModel;
-use crate::memory::MemorySearch;
 use crate::{AgentDeps, ChannelId, ProcessType};
 use rig::agent::AgentBuilder;
 use rig::completion::{CompletionModel as _, Prompt as _};
@@ -20,12 +18,9 @@ use tokio::sync::RwLock;
 /// Programmatic monitor that watches channel context size and triggers compaction.
 pub struct Compactor {
     pub channel_id: ChannelId,
-    pub config: CompactionConfig,
-    pub context_window: usize,
     pub deps: AgentDeps,
     pub history: Arc<RwLock<Vec<Message>>>,
     pub logger: ConversationLogger,
-    pub compactor_prompt: String,
     /// Is a compaction currently running.
     is_compacting: Arc<RwLock<bool>>,
 }
@@ -34,21 +29,15 @@ impl Compactor {
     /// Create a new compactor for a channel.
     pub fn new(
         channel_id: ChannelId,
-        config: CompactionConfig,
-        context_window: usize,
         deps: AgentDeps,
         history: Arc<RwLock<Vec<Message>>>,
         logger: ConversationLogger,
-        compactor_prompt: String,
     ) -> Self {
         Self {
             channel_id,
-            config,
-            context_window,
             deps,
             history,
             logger,
-            compactor_prompt,
             is_compacting: Arc::new(RwLock::new(false)),
         }
     }
@@ -62,17 +51,21 @@ impl Compactor {
             return Ok(None);
         }
 
+        let rc = &self.deps.runtime_config;
+        let context_window = **rc.context_window.load();
+        let compaction_config = **rc.compaction.load();
+
         let usage = {
             let history = self.history.read().await;
             let estimated_tokens = estimate_history_tokens(&history);
-            estimated_tokens as f32 / self.context_window as f32
+            estimated_tokens as f32 / context_window as f32
         };
 
-        let action = if usage >= self.config.emergency_threshold {
+        let action = if usage >= compaction_config.emergency_threshold {
             Some(CompactionAction::EmergencyTruncate)
-        } else if usage >= self.config.aggressive_threshold {
+        } else if usage >= compaction_config.aggressive_threshold {
             Some(CompactionAction::Aggressive)
-        } else if usage >= self.config.background_threshold {
+        } else if usage >= compaction_config.background_threshold {
             Some(CompactionAction::Background)
         } else {
             None
@@ -123,7 +116,7 @@ impl Compactor {
         let channel_id = self.channel_id.clone();
         let deps = self.deps.clone();
         let logger = self.logger.clone();
-        let compactor_prompt = self.compactor_prompt.clone();
+        let compactor_prompt = deps.runtime_config.prompts.load().compactor.clone();
 
         tokio::spawn(async move {
             let result = run_compaction(
@@ -224,9 +217,10 @@ async fn run_compaction(
     let transcript = render_messages_as_transcript(&removed_messages);
 
     // 4. Run the compaction LLM to produce summary + extracted memories
-    let model_name = deps.routing.resolve(ProcessType::Worker, None).to_string();
+    let routing = deps.runtime_config.routing.load();
+    let model_name = routing.resolve(ProcessType::Worker, None).to_string();
     let model = SpacebotModel::make(&deps.llm_manager, &model_name)
-        .with_routing(deps.routing.clone());
+        .with_routing((**routing).clone());
 
     // Give the compaction worker memory_save so it can directly persist memories
     let tool_server: ToolServerHandle = ToolServer::new()

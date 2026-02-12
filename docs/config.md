@@ -1,0 +1,377 @@
+# Configuration
+
+Complete reference for `config.toml`. Spacebot looks for this file at `~/.spacebot/config.toml` (or `$SPACEBOT_DIR/config.toml`). If no config file exists, it falls back to environment variables.
+
+## File Location
+
+```
+~/.spacebot/config.toml          # default
+$SPACEBOT_DIR/config.toml        # env override
+spacebot --config /path/to.toml  # CLI override
+```
+
+## Full Reference
+
+```toml
+# --- LLM Provider Credentials ---
+# Instance-level, shared by all agents. At least one key is required.
+[llm]
+anthropic_key = "env:ANTHROPIC_API_KEY"
+openai_key = "env:OPENAI_API_KEY"
+openrouter_key = "env:OPENROUTER_API_KEY"
+
+# --- Instance Defaults ---
+# All agents inherit these. Individual agents can override any field.
+[defaults]
+max_concurrent_branches = 5    # max branches per channel
+max_turns = 5                  # max LLM turns per channel message
+context_window = 128000        # context window size in tokens
+history_backfill_count = 50    # messages to fetch from platform on new channel
+
+# Model routing per process type.
+[defaults.routing]
+channel = "anthropic/claude-sonnet-4-20250514"
+branch = "anthropic/claude-sonnet-4-20250514"
+worker = "anthropic/claude-haiku-4.5-20250514"
+compactor = "anthropic/claude-haiku-4.5-20250514"
+cortex = "anthropic/claude-haiku-4.5-20250514"
+rate_limit_cooldown_secs = 60
+
+# Task-type overrides for workers/branches.
+[defaults.routing.task_overrides]
+coding = "anthropic/claude-sonnet-4-20250514"
+
+# Fallback chains when a model is rate-limited or down.
+[defaults.routing.fallbacks]
+"anthropic/claude-sonnet-4-20250514" = ["anthropic/claude-haiku-4.5-20250514"]
+
+# Context compaction thresholds (fraction of context_window).
+[defaults.compaction]
+background_threshold = 0.80    # background summarization
+aggressive_threshold = 0.85    # aggressive summarization
+emergency_threshold = 0.95     # drop oldest 50%, no LLM
+
+# Cortex (system observer) settings.
+[defaults.cortex]
+tick_interval_secs = 30
+worker_timeout_secs = 300
+branch_timeout_secs = 60
+circuit_breaker_threshold = 3  # consecutive failures before auto-disable
+
+# Browser automation for workers.
+[defaults.browser]
+enabled = true
+headless = true
+evaluate_enabled = false
+executable_path = "/path/to/chrome"     # optional, auto-detected
+screenshot_dir = "/path/to/screenshots" # optional, defaults to data_dir/screenshots
+
+# --- Agents ---
+# At least one agent is required. First agent or the one with default = true
+# is the default.
+[[agents]]
+id = "main"
+default = true
+workspace = "/custom/workspace/path"   # optional, defaults to ~/.spacebot/agents/{id}/workspace
+
+# Per-agent routing overrides (merges with defaults).
+[agents.routing]
+channel = "anthropic/claude-opus-4-20250514"
+
+# Per-agent heartbeats.
+[[agents.heartbeats]]
+id = "daily-check"
+prompt = "Check in on ongoing projects and report status."
+interval_secs = 86400
+delivery_target = "discord:123456789"
+active_start_hour = 9
+active_end_hour = 17
+enabled = true
+
+# --- Messaging Platforms ---
+[messaging.discord]
+enabled = true
+token = "env:DISCORD_BOT_TOKEN"
+dm_allowed_users = ["user_id_1", "user_id_2"]
+
+[messaging.webhook]
+enabled = true
+port = 18789
+bind = "127.0.0.1"
+
+# --- Bindings ---
+# Routes platform conversations to agents. First match wins.
+[[bindings]]
+agent_id = "main"
+channel = "discord"
+guild_id = "123456789"
+channel_ids = ["456", "789"]   # optional, restricts to specific channels
+
+[[bindings]]
+agent_id = "main"
+channel = "webhook"
+```
+
+## Environment Variable References
+
+Any string value in the config can reference an environment variable with the `env:` prefix:
+
+```toml
+anthropic_key = "env:ANTHROPIC_API_KEY"
+```
+
+This reads `ANTHROPIC_API_KEY` from the environment at startup. If the variable is unset, the value is treated as missing.
+
+LLM keys also have implicit env fallbacks — if no key is set in the TOML, Spacebot checks `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY` automatically.
+
+## Env-Only Mode
+
+If no `config.toml` exists, Spacebot runs from environment variables alone:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+# optional model overrides
+export SPACEBOT_CHANNEL_MODEL="anthropic/claude-sonnet-4-20250514"
+export SPACEBOT_WORKER_MODEL="anthropic/claude-haiku-4.5-20250514"
+spacebot
+```
+
+This creates a single "main" agent with default settings.
+
+## Config Resolution Order
+
+For any setting, the resolution chain is:
+
+```
+agent-level override  >  [defaults] section  >  hardcoded default
+```
+
+An agent with no overrides inherits everything from `[defaults]`. An agent with partial overrides gets those values from its own config and everything else from defaults. See [docs/agents.md](agents.md) for how agent config merging works.
+
+## Model Names
+
+Model names include the provider as a prefix:
+
+| Provider | Format | Example |
+|----------|--------|---------|
+| Anthropic | `anthropic/<model>` | `anthropic/claude-sonnet-4-20250514` |
+| OpenAI | `openai/<model>` | `openai/gpt-4o` |
+| OpenRouter | `openrouter/<provider>/<model>` | `openrouter/anthropic/claude-sonnet-4-20250514` |
+
+You can mix providers across process types. See [docs/routing.md](routing.md) for the full routing system.
+
+## Hot Reload
+
+Most config values are hot-reloaded when their files change. Spacebot watches `config.toml`, prompt files, identity files, and skill directories. Changes are debounced to 2 seconds and applied to all running channels, workers, and branches without restart.
+
+### What Hot-Reloads
+
+| Setting | Reloads? | Scope |
+|---------|----------|-------|
+| Model routing | Yes | Next LLM call uses the new model |
+| Compaction thresholds | Yes | Next compaction check uses new thresholds |
+| `max_turns` | Yes | Next channel message uses new limit |
+| `context_window` | Yes | Next compaction/worker check uses new size |
+| `max_concurrent_branches` | Yes | Next branch spawn checks new limit |
+| Browser config | Yes | Next worker spawn uses new config |
+| System prompts (CHANNEL.md, etc.) | Yes | Next channel message / worker spawn uses new prompt |
+| Identity files (SOUL.md, etc.) | Yes | Next channel message renders new identity |
+| Skills (SKILL.md files) | Yes | Next message / worker spawn sees new skills |
+
+### What Needs Restart
+
+| Setting | Why |
+|---------|-----|
+| LLM API keys | Provider clients are initialized once |
+| Messaging adapters (Discord token, webhook bind/port) | Adapter connections are long-lived |
+| Agent topology (adding/removing `[[agents]]`) | Databases and event buses are per-agent |
+| Database paths | Connections are opened once at startup |
+| Bindings | Routing table is copied at startup |
+
+### How It Works
+
+A file watcher (via the `notify` crate) monitors:
+
+- `~/.spacebot/config.toml`
+- `~/.spacebot/prompts/` (shared prompt directory)
+- `~/.spacebot/skills/` (instance-level skills)
+- Each agent's `workspace/` (identity files)
+- Each agent's `workspace/prompts/` (prompt overrides)
+- Each agent's `workspace/skills/` (workspace-level skills)
+
+On file change, Spacebot re-reads the changed files and atomically swaps the new values into the live `RuntimeConfig` using `arc-swap`. All consumers (channels, branches, workers, compactors, heartbeats) read from `RuntimeConfig` on every use, so they pick up changes immediately.
+
+```
+File change detected
+  → debounce 2 seconds (collapses rapid edits)
+  → categorize: config / prompts / identity / skills
+  → re-parse changed files
+  → ArcSwap::store() on RuntimeConfig fields
+  → all running processes see new values on next read
+```
+
+No lock contention. Reads are wait-free via `arc-swap`. The watcher runs on a dedicated thread; reloads don't block the async runtime.
+
+## On-Disk Layout
+
+```
+~/.spacebot/
+├── config.toml                    # main config (hot-reloaded)
+├── embedding_cache/               # shared embedding model cache
+├── prompts/                       # shared system prompts (hot-reloaded)
+│   ├── CHANNEL.md
+│   ├── BRANCH.md
+│   ├── WORKER.md
+│   ├── COMPACTOR.md
+│   └── CORTEX.md
+├── skills/                        # instance-level skills (hot-reloaded)
+│   └── weather/
+│       └── SKILL.md
+└── agents/
+    └── main/
+        ├── workspace/             # agent workspace
+        │   ├── SOUL.md            # personality (hot-reloaded)
+        │   ├── IDENTITY.md        # name and nature (hot-reloaded)
+        │   ├── USER.md            # info about the human (hot-reloaded)
+        │   ├── prompts/           # prompt overrides (hot-reloaded)
+        │   │   └── CHANNEL.md
+        │   └── skills/            # workspace-level skills (hot-reloaded)
+        ├── data/
+        │   ├── spacebot.db        # SQLite
+        │   ├── lancedb/           # vector search
+        │   └── config.redb        # key-value settings
+        └── archives/              # compaction transcripts
+```
+
+## Sections Reference
+
+### `[llm]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `anthropic_key` | string | None | Anthropic API key (or `env:VAR_NAME`) |
+| `openai_key` | string | None | OpenAI API key (or `env:VAR_NAME`) |
+| `openrouter_key` | string | None | OpenRouter API key (or `env:VAR_NAME`) |
+
+At least one key must be provided (via config or environment).
+
+### `[defaults]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_concurrent_branches` | integer | 5 | Max branches per channel |
+| `max_turns` | integer | 5 | Max LLM turns per channel message |
+| `context_window` | integer | 128000 | Context window size in tokens |
+| `history_backfill_count` | integer | 50 | Messages to fetch from platform on new channel |
+
+### `[defaults.routing]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `channel` | string | `anthropic/claude-sonnet-4-20250514` | Model for user-facing channels |
+| `branch` | string | `anthropic/claude-sonnet-4-20250514` | Model for thinking branches |
+| `worker` | string | `anthropic/claude-haiku-4.5-20250514` | Model for task workers |
+| `compactor` | string | `anthropic/claude-haiku-4.5-20250514` | Model for summarization |
+| `cortex` | string | `anthropic/claude-haiku-4.5-20250514` | Model for system observation |
+| `rate_limit_cooldown_secs` | integer | 60 | How long to deprioritize a rate-limited model |
+
+### `[defaults.routing.task_overrides]`
+
+Map of task type names to model names. Applied when workers or branches are spawned with a specific task type.
+
+```toml
+[defaults.routing.task_overrides]
+coding = "anthropic/claude-sonnet-4-20250514"
+deep_reasoning = "anthropic/claude-opus-4-20250514"
+```
+
+### `[defaults.routing.fallbacks]`
+
+Map of model names to ordered fallback chains. Used when the primary model returns a retriable error.
+
+```toml
+[defaults.routing.fallbacks]
+"anthropic/claude-sonnet-4-20250514" = ["anthropic/claude-haiku-4.5-20250514"]
+```
+
+### `[defaults.compaction]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `background_threshold` | float | 0.80 | Start background summarization |
+| `aggressive_threshold` | float | 0.85 | Start aggressive summarization |
+| `emergency_threshold` | float | 0.95 | Emergency truncation (no LLM, drop oldest 50%) |
+
+Thresholds are fractions of `context_window`.
+
+### `[defaults.cortex]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tick_interval_secs` | integer | 30 | How often the cortex checks system state |
+| `worker_timeout_secs` | integer | 300 | Worker timeout before cancellation |
+| `branch_timeout_secs` | integer | 60 | Branch timeout before cancellation |
+| `circuit_breaker_threshold` | integer | 3 | Consecutive failures before auto-disable |
+
+### `[defaults.browser]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | true | Whether workers have browser tools |
+| `headless` | bool | true | Run Chrome headless |
+| `evaluate_enabled` | bool | false | Allow JavaScript evaluation |
+| `executable_path` | string | None | Custom Chrome/Chromium path |
+| `screenshot_dir` | string | None | Directory for screenshots |
+
+### `[[agents]]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `id` | string | **required** | Agent identifier |
+| `default` | bool | false | Whether this is the default agent |
+| `workspace` | string | `~/.spacebot/agents/{id}/workspace` | Custom workspace path |
+| `max_concurrent_branches` | integer | inherits | Override instance default |
+| `max_turns` | integer | inherits | Override instance default |
+| `context_window` | integer | inherits | Override instance default |
+
+Agent-specific routing is set via `[agents.routing]` with the same keys as `[defaults.routing]`.
+
+### `[[agents.heartbeats]]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `id` | string | **required** | Heartbeat identifier |
+| `prompt` | string | **required** | Prompt sent to a fresh channel on each tick |
+| `interval_secs` | integer | 3600 | Seconds between firings |
+| `delivery_target` | string | **required** | Where to send results (`adapter:target`) |
+| `active_start_hour` | integer | None | Start of active hours window (24h format) |
+| `active_end_hour` | integer | None | End of active hours window |
+| `enabled` | bool | true | Whether this heartbeat is active |
+
+### `[messaging.discord]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | false | Enable Discord adapter |
+| `token` | string | None | Bot token (or `env:VAR_NAME`) |
+| `dm_allowed_users` | string[] | [] | User IDs allowed to DM the bot |
+
+### `[messaging.webhook]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | false | Enable webhook receiver |
+| `port` | integer | 18789 | HTTP listen port |
+| `bind` | string | `127.0.0.1` | Bind address |
+
+### `[[bindings]]`
+
+Routes platform conversations to agents. Checked in order; first match wins. Unmatched messages go to the default agent.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `agent_id` | string | **required** | Which agent handles matched messages |
+| `channel` | string | **required** | Platform name (`discord`, `webhook`) |
+| `guild_id` | string | None | Discord guild filter |
+| `chat_id` | string | None | Telegram chat filter |
+| `channel_ids` | string[] | [] | Discord channel ID filter (includes threads in those channels) |

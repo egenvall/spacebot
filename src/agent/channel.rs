@@ -1,7 +1,6 @@
 //! Channel: User-facing conversation process.
 
 use crate::agent::compactor::Compactor;
-use crate::config::CompactionConfig;
 use crate::error::{AgentError, Result};
 use crate::llm::SpacebotModel;
 use crate::conversation::ConversationLogger;
@@ -19,30 +18,6 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::sync::broadcast;
 use std::collections::HashMap;
 
-/// Channel configuration.
-#[derive(Debug, Clone)]
-pub struct ChannelConfig {
-    /// Maximum concurrent branches.
-    pub max_concurrent_branches: usize,
-    /// Maximum turns for channel LLM calls.
-    pub max_turns: usize,
-    /// Context window size in tokens.
-    pub context_window: usize,
-    /// Compaction thresholds.
-    pub compaction: CompactionConfig,
-}
-
-impl Default for ChannelConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrent_branches: 5,
-            max_turns: 5,
-            context_window: 128_000,
-            compaction: CompactionConfig::default(),
-        }
-    }
-}
-
 /// Shared state that channel tools need to act on the channel.
 ///
 /// Wrapped in Arc and passed to tools (branch, spawn_worker, route, cancel)
@@ -55,14 +30,8 @@ pub struct ChannelState {
     pub active_workers: Arc<RwLock<HashMap<WorkerId, Worker>>>,
     pub status_block: Arc<RwLock<StatusBlock>>,
     pub deps: AgentDeps,
-    pub identity_context: String,
-    pub branch_system_prompt: String,
-    pub worker_system_prompt: String,
-    pub max_concurrent_branches: usize,
     pub conversation_logger: ConversationLogger,
-    pub browser_config: crate::config::BrowserConfig,
     pub screenshot_dir: std::path::PathBuf,
-    pub skills: Arc<crate::skills::SkillSet>,
 }
 
 impl std::fmt::Debug for ChannelState {
@@ -77,12 +46,9 @@ impl std::fmt::Debug for ChannelState {
 pub struct Channel {
     pub id: ChannelId,
     pub title: Option<String>,
-    pub config: ChannelConfig,
     pub deps: AgentDeps,
     pub hook: SpacebotHook,
     pub state: ChannelState,
-    /// System prompt loaded from prompts/CHANNEL.md.
-    pub system_prompt: String,
     /// Input channel for receiving messages.
     pub message_rx: mpsc::Receiver<InboundMessage>,
     /// Event receiver for process events.
@@ -101,20 +67,16 @@ pub struct Channel {
 
 impl Channel {
     /// Create a new channel.
+    ///
+    /// All tunable config (prompts, routing, thresholds, browser, skills) is read
+    /// from `deps.runtime_config` on each use, so changes propagate to running
+    /// channels without restart.
     pub fn new(
         id: ChannelId,
         deps: AgentDeps,
-        config: ChannelConfig,
-        system_prompt: impl Into<String>,
-        identity_context: impl Into<String>,
-        branch_system_prompt: impl Into<String>,
-        worker_system_prompt: impl Into<String>,
-        compactor_prompt: impl Into<String>,
         response_tx: mpsc::Sender<OutboundResponse>,
         event_rx: broadcast::Receiver<ProcessEvent>,
-        browser_config: crate::config::BrowserConfig,
         screenshot_dir: std::path::PathBuf,
-        skills: Arc<crate::skills::SkillSet>,
     ) -> (Self, mpsc::Sender<InboundMessage>) {
         let process_id = ProcessId::Channel(id.clone());
         let hook = SpacebotHook::new(deps.agent_id.clone(), process_id, ProcessType::Channel, deps.event_tx.clone());
@@ -128,12 +90,9 @@ impl Channel {
 
         let compactor = Compactor::new(
             id.clone(),
-            config.compaction,
-            config.context_window,
             deps.clone(),
             history.clone(),
             conversation_logger.clone(),
-            compactor_prompt.into(),
         );
 
         let state = ChannelState {
@@ -143,25 +102,17 @@ impl Channel {
             active_workers: active_workers.clone(),
             status_block: status_block.clone(),
             deps: deps.clone(),
-            identity_context: identity_context.into(),
-            branch_system_prompt: branch_system_prompt.into(),
-            worker_system_prompt: worker_system_prompt.into(),
-            max_concurrent_branches: config.max_concurrent_branches,
             conversation_logger,
-            browser_config,
             screenshot_dir,
-            skills,
         };
 
         let self_tx = message_tx.clone();
         let channel = Self {
             id: id.clone(),
             title: None,
-            config,
             deps,
             hook,
             state,
-            system_prompt: system_prompt.into(),
             message_rx,
             event_rx,
             response_tx,
@@ -257,13 +208,18 @@ impl Channel {
             let status = self.state.status_block.read().await;
             status.render()
         };
+        let rc = &self.deps.runtime_config;
+        let identity_context = rc.identity.load().render();
+        let channel_prompt = rc.prompts.load().channel.clone();
+        let skills = rc.skills.load();
+
         let mut system_prompt = String::new();
-        if !self.state.identity_context.is_empty() {
-            system_prompt.push_str(&self.state.identity_context);
+        if !identity_context.is_empty() {
+            system_prompt.push_str(&identity_context);
             system_prompt.push_str("\n\n");
         }
-        system_prompt.push_str(&self.system_prompt);
-        let skills_prompt = self.state.skills.render_channel_prompt();
+        system_prompt.push_str(&channel_prompt);
+        let skills_prompt = skills.render_channel_prompt();
         if !skills_prompt.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&skills_prompt);
@@ -290,13 +246,15 @@ impl Channel {
         }
 
         // Construct the model and agent for this turn
-        let model_name = self.deps.routing.resolve(ProcessType::Channel, None);
+        let routing = rc.routing.load();
+        let max_turns = **rc.max_turns.load();
+        let model_name = routing.resolve(ProcessType::Channel, None);
         let model = SpacebotModel::make(&self.deps.llm_manager, model_name)
-            .with_routing(self.deps.routing.clone());
+            .with_routing((**routing).clone());
 
         let agent = AgentBuilder::new(model)
             .preamble(&system_prompt)
-            .default_max_turns(self.config.max_turns)
+            .default_max_turns(max_turns)
             .tool_server_handle(self.deps.tool_server.clone())
             .build();
 
@@ -443,13 +401,14 @@ pub async fn spawn_branch_from_state(
 ) -> std::result::Result<BranchId, AgentError> {
     let description = description.into();
 
-    // Check branch limit
+    // Check branch limit (read live from runtime config)
+    let max_branches = **state.deps.runtime_config.max_concurrent_branches.load();
     {
         let branches = state.active_branches.read().await;
-        if branches.len() >= state.max_concurrent_branches {
+        if branches.len() >= max_branches {
             return Err(AgentError::BranchLimitReached {
                 channel_id: state.channel_id.to_string(),
-                max: state.max_concurrent_branches,
+                max: max_branches,
             });
         }
     }
@@ -461,11 +420,12 @@ pub async fn spawn_branch_from_state(
     };
     
     let prompt = description.clone();
+    let branch_system_prompt = state.deps.runtime_config.prompts.load().branch.clone();
     let branch = Branch::new(
         state.channel_id.clone(),
         &description,
         state.deps.clone(),
-        &state.branch_system_prompt,
+        &branch_system_prompt,
         history,
     );
     
@@ -502,16 +462,21 @@ pub async fn spawn_worker_from_state(
 ) -> std::result::Result<WorkerId, AgentError> {
     let task = task.into();
 
+    let rc = &state.deps.runtime_config;
+    let worker_system_prompt = rc.prompts.load().worker.clone();
+    let skills = rc.skills.load();
+    let browser_config = (**rc.browser_config.load()).clone();
+
     // Build the worker system prompt, optionally prepending skill instructions
     let system_prompt = if let Some(name) = skill_name {
-        if let Some(skill_prompt) = state.skills.render_worker_prompt(name) {
-            format!("{}\n\n{}", state.worker_system_prompt, skill_prompt)
+        if let Some(skill_prompt) = skills.render_worker_prompt(name) {
+            format!("{}\n\n{}", worker_system_prompt, skill_prompt)
         } else {
             tracing::warn!(skill = %name, "skill not found, spawning worker without skill context");
-            state.worker_system_prompt.clone()
+            worker_system_prompt
         }
     } else {
-        state.worker_system_prompt.clone()
+        worker_system_prompt
     };
     
     let worker = if interactive {
@@ -520,7 +485,7 @@ pub async fn spawn_worker_from_state(
             &task,
             &system_prompt,
             state.deps.clone(),
-            state.browser_config.clone(),
+            browser_config.clone(),
             state.screenshot_dir.clone(),
         );
         // TODO: Store input_tx somewhere accessible for routing follow-ups
@@ -531,7 +496,7 @@ pub async fn spawn_worker_from_state(
             &task,
             &system_prompt,
             state.deps.clone(),
-            state.browser_config.clone(),
+            browser_config,
             state.screenshot_dir.clone(),
         )
     };

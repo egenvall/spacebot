@@ -74,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
     // Resolve agent configs and initialize each agent
     let resolved_agents = config.resolve_agents();
     let mut agents: HashMap<spacebot::AgentId, spacebot::Agent> = HashMap::new();
+    // Collected for the file watcher: (agent_id, workspace, runtime_config)
+    let mut watcher_agents: Vec<(String, std::path::PathBuf, Arc<spacebot::config::RuntimeConfig>)> = Vec::new();
 
     let shared_prompts_dir = config.prompts_dir();
 
@@ -117,16 +119,6 @@ async fn main() -> anyhow::Result<()> {
 
         let agent_id: spacebot::AgentId = Arc::from(agent_config.id.as_str());
 
-        let deps = spacebot::AgentDeps {
-            agent_id: agent_id.clone(),
-            memory_search,
-            llm_manager: llm_manager.clone(),
-            tool_server,
-            routing: agent_config.routing.clone(),
-            event_tx,
-            sqlite_pool: db.sqlite.clone(),
-        };
-
         // Scaffold identity templates if missing, then load
         spacebot::identity::scaffold_identity_files(&agent_config.workspace)
             .await
@@ -140,19 +132,40 @@ async fn main() -> anyhow::Result<()> {
         ).await.with_context(|| format!("failed to load prompts for agent '{}'", agent_config.id))?;
 
         // Load skills (instance-level, then workspace overrides)
-        let skills = Arc::new(spacebot::skills::SkillSet::load(
+        let skills = spacebot::skills::SkillSet::load(
             &config.skills_dir(),
             &agent_config.skills_dir(),
-        ).await);
+        ).await;
+
+        // Build the RuntimeConfig with all hot-reloadable values
+        let runtime_config = Arc::new(spacebot::config::RuntimeConfig::new(
+            agent_config,
+            prompts,
+            identity,
+            skills,
+        ));
+
+        watcher_agents.push((
+            agent_config.id.clone(),
+            agent_config.workspace.clone(),
+            runtime_config.clone(),
+        ));
+
+        let deps = spacebot::AgentDeps {
+            agent_id: agent_id.clone(),
+            memory_search,
+            llm_manager: llm_manager.clone(),
+            tool_server,
+            runtime_config,
+            event_tx,
+            sqlite_pool: db.sqlite.clone(),
+        };
 
         let agent = spacebot::Agent {
             id: agent_id.clone(),
             config: agent_config.clone(),
             db,
             deps,
-            prompts,
-            identity,
-            skills,
         };
 
         tracing::info!(agent_id = %agent_config.id, "agent initialized");
@@ -256,14 +269,7 @@ async fn main() -> anyhow::Result<()> {
         // Load all enabled heartbeats and start the scheduler
         let heartbeat_context = spacebot::heartbeat::HeartbeatContext {
             deps: agent.deps.clone(),
-            system_prompt: agent.prompts.channel.clone(),
-            identity_context: agent.identity.render(),
-            branch_system_prompt: agent.prompts.branch.clone(),
-            worker_system_prompt: agent.prompts.worker.clone(),
-            compactor_prompt: agent.prompts.compactor.clone(),
-            browser_config: agent.config.browser.clone(),
             screenshot_dir: agent.config.screenshot_dir(),
-            skills: agent.skills.clone(),
             messaging_manager: messaging_manager.clone(),
             store: store.clone(),
         };
@@ -295,6 +301,14 @@ async fn main() -> anyhow::Result<()> {
 
     let default_agent_id = config.default_agent_id().to_string();
     let bindings = config.bindings.clone();
+
+    // Start file watcher for hot-reloading config, prompts, identity, and skills
+    let config_path = config.instance_dir.join("config.toml");
+    let _file_watcher = spacebot::config::spawn_file_watcher(
+        config_path,
+        config.instance_dir.clone(),
+        watcher_agents,
+    );
 
     // Active conversation channels: conversation_id -> ActiveChannel
     let mut active_channels: HashMap<String, ActiveChannel> = HashMap::new();
@@ -335,22 +349,9 @@ async fn main() -> anyhow::Result<()> {
                     let (channel, channel_tx) = spacebot::agent::channel::Channel::new(
                         channel_id,
                         agent.deps.clone(),
-                        spacebot::agent::channel::ChannelConfig {
-                            max_concurrent_branches: agent.config.max_concurrent_branches,
-                            max_turns: agent.config.max_turns,
-                            context_window: agent.config.context_window,
-                            compaction: agent.config.compaction,
-                        },
-                        &agent.prompts.channel,
-                        agent.identity.render(),
-                        &agent.prompts.branch,
-                        &agent.prompts.worker,
-                        &agent.prompts.compactor,
                         response_tx,
                         event_rx,
-                        agent.config.browser.clone(),
                         agent.config.screenshot_dir(),
-                        agent.skills.clone(),
                     );
 
                     // Backfill recent message history from the platform

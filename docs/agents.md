@@ -344,5 +344,5 @@ spacebot run --message "hello"
 - **Cross-agent communication** — one agent spawning work on another agent, or sending messages to another agent's conversation. Requires a routing layer between agents.
 - **System-level supervisor** — a process that monitors all agents (restarts crashed agents, tracks resource usage). Distinct from the per-agent cortex.
 - **Agent templates** — pre-built agent configurations for common use cases (dev assistant, research bot, community manager).
-- **Hot reload** — adding/removing agents without restarting the process. Currently requires restart.
+- **Hot reload agent topology** — adding/removing agents without restarting the process. Currently requires restart. (Config values, prompts, identity, and skills already hot-reload — see [docs/config.md](config.md).)
 - **Agent-level secrets** — per-agent API keys for third-party services (separate from instance-level LLM keys).

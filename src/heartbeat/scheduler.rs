@@ -5,8 +5,7 @@
 //! runs the heartbeat prompt through the LLM, and delivers the result
 //! to the delivery target via the messaging system.
 
-use crate::agent::channel::{Channel, ChannelConfig};
-use crate::config::BrowserConfig;
+use crate::agent::channel::Channel;
 use crate::error::Result;
 use crate::heartbeat::store::HeartbeatStore;
 use crate::messaging::MessagingManager;
@@ -81,17 +80,14 @@ fn default_true() -> bool {
 }
 
 /// Context needed to execute a heartbeat (agent resources + messaging).
+///
+/// Prompts, identity, browser config, and skills are read from
+/// `deps.runtime_config` on each heartbeat firing so changes propagate
+/// without restarting the scheduler.
 #[derive(Clone)]
 pub struct HeartbeatContext {
     pub deps: AgentDeps,
-    pub system_prompt: String,
-    pub identity_context: String,
-    pub branch_system_prompt: String,
-    pub worker_system_prompt: String,
-    pub compactor_prompt: String,
-    pub browser_config: BrowserConfig,
     pub screenshot_dir: std::path::PathBuf,
-    pub skills: Arc<crate::skills::SkillSet>,
     pub messaging_manager: Arc<MessagingManager>,
     pub store: Arc<HeartbeatStore>,
 }
@@ -295,17 +291,9 @@ async fn run_heartbeat(heartbeat: &Heartbeat, context: &HeartbeatContext) -> Res
     let (channel, channel_tx) = Channel::new(
         channel_id.clone(),
         context.deps.clone(),
-        ChannelConfig::default(),
-        &context.system_prompt,
-        &context.identity_context,
-        &context.branch_system_prompt,
-        &context.worker_system_prompt,
-        &context.compactor_prompt,
         response_tx,
         event_rx,
-        context.browser_config.clone(),
         context.screenshot_dir.clone(),
-        context.skills.clone(),
     );
 
     // Spawn the channel's event loop
