@@ -355,7 +355,7 @@ impl SpacebotModel {
             )));
         }
 
-        parse_openai_response(response_body)
+        parse_openai_response(response_body, "OpenAI")
     }
 
     async fn call_openrouter(
@@ -443,7 +443,7 @@ impl SpacebotModel {
         }
 
         // OpenRouter returns OpenAI-format responses
-        parse_openai_response(response_body)
+        parse_openai_response(response_body, "OpenRouter")
     }
 }
 
@@ -726,6 +726,7 @@ fn parse_anthropic_response(
 
 fn parse_openai_response(
     body: serde_json::Value,
+    provider_label: &str,
 ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
     let choice = &body["choices"][0]["message"];
 
@@ -754,7 +755,7 @@ fn parse_openai_response(
     }
 
     let result_choice = OneOrMany::many(assistant_content)
-        .map_err(|_| CompletionError::ResponseError("empty response from OpenAI".into()))?;
+        .map_err(|_| CompletionError::ResponseError(format!("empty response from {provider_label}")))?;
 
     let input_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
     let output_tokens = body["usage"]["completion_tokens"].as_u64().unwrap_or(0);

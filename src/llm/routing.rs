@@ -85,15 +85,20 @@ pub fn is_retriable_status(status: u16) -> bool {
 
 /// Whether a completion error message indicates a retriable failure.
 pub fn is_retriable_error(error_message: &str) -> bool {
+    let lower = error_message.to_lowercase();
     // Rate limits and server errors
-    error_message.contains("429")
-        || error_message.contains("502")
-        || error_message.contains("503")
-        || error_message.contains("504")
-        || error_message.contains("rate limit")
-        || error_message.contains("overloaded")
-        || error_message.contains("timeout")
-        || error_message.contains("connection")
+    lower.contains("429")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+        || lower.contains("rate limit")
+        || lower.contains("overloaded")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+        // Empty/malformed responses are transient provider issues
+        || lower.contains("empty response")
+        || lower.contains("failed to read response body")
+        || lower.contains("error decoding response body")
 }
 
 /// Whether a completion error indicates context window overflow.
