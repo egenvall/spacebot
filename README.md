@@ -48,7 +48,7 @@ Five process types. Each does one job.
 
 ### Channels
 
-The user-facing LLM process. One per conversation (Telegram DM, Discord thread, etc). Has soul, identity, and personality. Talks to the user. Delegates everything else.
+The user-facing LLM process — the ambassador to the human. One per conversation (Telegram DM, Discord thread, etc). Has soul, identity, and personality. Talks to the user. Delegates everything else.
 
 A channel does **not**: execute tasks directly, search memories itself, or do any heavy tool work. It is always responsive — never blocked by work, never frozen by compaction.
 

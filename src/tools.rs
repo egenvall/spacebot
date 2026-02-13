@@ -37,6 +37,7 @@ pub mod file;
 pub mod exec;
 pub mod browser;
 pub mod web_search;
+pub mod channel_recall;
 pub mod heartbeat;
 
 pub use reply::{ReplyTool, ReplyArgs, ReplyOutput, ReplyError};
@@ -55,6 +56,7 @@ pub use file::{FileTool, FileArgs, FileOutput, FileError, FileEntryOutput, FileE
 pub use exec::{ExecTool, ExecArgs, ExecOutput, ExecError, ExecResult, EnvVar};
 pub use browser::{BrowserTool, BrowserArgs, BrowserOutput, BrowserError, BrowserAction, ActKind, ElementSummary, TabInfo};
 pub use web_search::{WebSearchTool, WebSearchArgs, WebSearchOutput, WebSearchError, SearchResult};
+pub use channel_recall::{ChannelRecallTool, ChannelRecallArgs, ChannelRecallOutput, ChannelRecallError};
 pub use heartbeat::{HeartbeatTool, HeartbeatArgs, HeartbeatOutput, HeartbeatError};
 
 use crate::agent::channel::ChannelState;
@@ -122,11 +124,15 @@ pub async fn remove_channel_tools(
 /// Each branch gets its own isolated ToolServer so `memory_recall` is never
 /// visible to the channel. Both `memory_save` and `memory_recall` are
 /// registered at creation.
-pub fn create_branch_tool_server(memory_search: Arc<MemorySearch>) -> ToolServerHandle {
+pub fn create_branch_tool_server(
+    memory_search: Arc<MemorySearch>,
+    conversation_logger: crate::conversation::history::ConversationLogger,
+) -> ToolServerHandle {
     ToolServer::new()
         .tool(MemorySaveTool::new(memory_search.clone()))
         .tool(MemoryRecallTool::new(memory_search.clone()))
         .tool(MemoryDeleteTool::new(memory_search))
+        .tool(ChannelRecallTool::new(conversation_logger))
         .run()
 }
 

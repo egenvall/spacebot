@@ -249,8 +249,9 @@ async fn process_chunk(
     let model = SpacebotModel::make(&deps.llm_manager, &model_name)
         .with_routing((**routing).clone());
 
+    let conversation_logger = crate::conversation::history::ConversationLogger::new(deps.sqlite_pool.clone());
     let tool_server: ToolServerHandle =
-        crate::tools::create_branch_tool_server(deps.memory_search.clone());
+        crate::tools::create_branch_tool_server(deps.memory_search.clone(), conversation_logger);
 
     let agent = AgentBuilder::new(model)
         .preamble(&ingestion_prompt)

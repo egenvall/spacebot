@@ -590,7 +590,10 @@ async fn spawn_branch(
         h.clone()
     };
 
-    let tool_server = crate::tools::create_branch_tool_server(state.deps.memory_search.clone());
+    let tool_server = crate::tools::create_branch_tool_server(
+        state.deps.memory_search.clone(),
+        state.conversation_logger.clone(),
+    );
     let branch_max_turns = **state.deps.runtime_config.branch_max_turns.load();
 
     let branch = Branch::new(
