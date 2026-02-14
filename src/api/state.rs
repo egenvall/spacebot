@@ -40,6 +40,8 @@ pub struct ApiState {
     pub cortex_chat_sessions: arc_swap::ArcSwap<HashMap<String, Arc<CortexChatSession>>>,
     /// Per-agent workspace paths for identity file access.
     pub agent_workspaces: arc_swap::ArcSwap<HashMap<String, PathBuf>>,
+    /// Path to the instance config.toml file.
+    pub config_path: RwLock<PathBuf>,
 }
 
 /// Events sent to SSE clients. Wraps ProcessEvents with agent context.
@@ -130,6 +132,7 @@ impl ApiState {
             channel_status_blocks: RwLock::new(HashMap::new()),
             cortex_chat_sessions: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             agent_workspaces: arc_swap::ArcSwap::from_pointee(HashMap::new()),
+            config_path: RwLock::new(PathBuf::new()),
         }
     }
 
@@ -262,6 +265,12 @@ impl ApiState {
     /// Set the workspace paths for all agents.
     pub fn set_agent_workspaces(&self, workspaces: HashMap<String, PathBuf>) {
         self.agent_workspaces.store(Arc::new(workspaces));
+    }
+
+    /// Set the config.toml path.
+    pub async fn set_config_path(&self, path: PathBuf) {
+        let mut guard = self.config_path.write().await;
+        *guard = path;
     }
 }
 

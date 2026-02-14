@@ -583,6 +583,7 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
 
     // Start file watcher for hot-reloading config, prompts, identity, skills, bindings, and permissions
     let config_path = config.instance_dir.join("config.toml");
+    api_state.set_config_path(config_path.clone()).await;
     let _file_watcher = spacebot::config::spawn_file_watcher(
         config_path,
         config.instance_dir.clone(),

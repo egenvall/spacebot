@@ -2,16 +2,26 @@
 # Compiles the React frontend and the Rust binary with the frontend embedded.
 FROM rust:bookworm AS builder
 
-# Install bun for frontend build
+# Install build dependencies:
+#   protobuf-compiler — LanceDB protobuf codegen
+#   cmake — onig_sys (regex), lz4-sys
+#   libssl-dev — openssl-sys (reqwest TLS)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    libprotobuf-dev \
+    cmake \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 
 WORKDIR /build
 
 # 1. Fetch and cache Rust dependencies.
-#    The actual compilation requires full source, but fetching crates is the slow part.
+#    cargo fetch needs a valid target, so we create stubs that get replaced later.
 COPY Cargo.toml Cargo.lock ./
-RUN cargo fetch
+RUN mkdir src && echo "fn main() {}" > src/main.rs && touch src/lib.rs && cargo fetch && rm -rf src
 
 # 2. Build the frontend.
 COPY interface/ interface/

@@ -335,6 +335,134 @@ export interface IdentityUpdateRequest {
 	user?: string | null;
 }
 
+// -- Agent Config Types --
+
+export interface RoutingSection {
+	channel: string;
+	branch: string;
+	worker: string;
+	compactor: string;
+	cortex: string;
+	rate_limit_cooldown_secs: number;
+}
+
+export interface TuningSection {
+	max_concurrent_branches: number;
+	max_turns: number;
+	branch_max_turns: number;
+	context_window: number;
+	history_backfill_count: number;
+}
+
+export interface CompactionSection {
+	background_threshold: number;
+	aggressive_threshold: number;
+	emergency_threshold: number;
+}
+
+export interface CortexSection {
+	tick_interval_secs: number;
+	worker_timeout_secs: number;
+	branch_timeout_secs: number;
+	circuit_breaker_threshold: number;
+	bulletin_interval_secs: number;
+	bulletin_max_words: number;
+	bulletin_max_turns: number;
+}
+
+export interface CoalesceSection {
+	enabled: boolean;
+	debounce_ms: number;
+	max_wait_ms: number;
+	min_messages: number;
+	multi_user_only: boolean;
+}
+
+export interface MemoryPersistenceSection {
+	enabled: boolean;
+	message_interval: number;
+}
+
+export interface BrowserSection {
+	enabled: boolean;
+	headless: boolean;
+	evaluate_enabled: boolean;
+}
+
+export interface AgentConfigResponse {
+	routing: RoutingSection;
+	tuning: TuningSection;
+	compaction: CompactionSection;
+	cortex: CortexSection;
+	coalesce: CoalesceSection;
+	memory_persistence: MemoryPersistenceSection;
+	browser: BrowserSection;
+}
+
+// Partial update types - all fields are optional
+export interface RoutingUpdate {
+	channel?: string;
+	branch?: string;
+	worker?: string;
+	compactor?: string;
+	cortex?: string;
+	rate_limit_cooldown_secs?: number;
+}
+
+export interface TuningUpdate {
+	max_concurrent_branches?: number;
+	max_turns?: number;
+	branch_max_turns?: number;
+	context_window?: number;
+	history_backfill_count?: number;
+}
+
+export interface CompactionUpdate {
+	background_threshold?: number;
+	aggressive_threshold?: number;
+	emergency_threshold?: number;
+}
+
+export interface CortexUpdate {
+	tick_interval_secs?: number;
+	worker_timeout_secs?: number;
+	branch_timeout_secs?: number;
+	circuit_breaker_threshold?: number;
+	bulletin_interval_secs?: number;
+	bulletin_max_words?: number;
+	bulletin_max_turns?: number;
+}
+
+export interface CoalesceUpdate {
+	enabled?: boolean;
+	debounce_ms?: number;
+	max_wait_ms?: number;
+	min_messages?: number;
+	multi_user_only?: boolean;
+}
+
+export interface MemoryPersistenceUpdate {
+	enabled?: boolean;
+	message_interval?: number;
+}
+
+export interface BrowserUpdate {
+	enabled?: boolean;
+	headless?: boolean;
+	evaluate_enabled?: boolean;
+}
+
+export interface AgentConfigUpdateRequest {
+	agent_id: string;
+	routing?: RoutingUpdate;
+	tuning?: TuningUpdate;
+	compaction?: CompactionUpdate;
+	cortex?: CortexUpdate;
+	coalesce?: CoalesceUpdate;
+	memory_persistence?: MemoryPersistenceUpdate;
+	browser?: BrowserUpdate;
+}
+
 export const api = {
 	status: () => fetchJson<StatusResponse>("/status"),
 	agents: () => fetchJson<AgentsResponse>("/agents"),
@@ -393,6 +521,19 @@ export const api = {
 			throw new Error(`API error: ${response.status}`);
 		}
 		return response.json() as Promise<IdentityFiles>;
+	},
+	agentConfig: (agentId: string) =>
+		fetchJson<AgentConfigResponse>(`/agents/config?agent_id=${encodeURIComponent(agentId)}`),
+	updateAgentConfig: async (request: AgentConfigUpdateRequest) => {
+		const response = await fetch(`${API_BASE}/agents/config`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(request),
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<AgentConfigResponse>;
 	},
 	eventsUrl: `${API_BASE}/events`,
 };
