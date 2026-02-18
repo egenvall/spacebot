@@ -334,6 +334,11 @@ struct RoutingSection {
     compactor: String,
     cortex: String,
     rate_limit_cooldown_secs: u64,
+    channel_thinking_effort: String,
+    branch_thinking_effort: String,
+    worker_thinking_effort: String,
+    compactor_thinking_effort: String,
+    cortex_thinking_effort: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -438,6 +443,11 @@ struct RoutingUpdate {
     compactor: Option<String>,
     cortex: Option<String>,
     rate_limit_cooldown_secs: Option<u64>,
+    channel_thinking_effort: Option<String>,
+    branch_thinking_effort: Option<String>,
+    worker_thinking_effort: Option<String>,
+    compactor_thinking_effort: Option<String>,
+    cortex_thinking_effort: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1816,6 +1826,11 @@ async fn get_agent_config(
             compactor: routing.compactor.clone(),
             cortex: routing.cortex.clone(),
             rate_limit_cooldown_secs: routing.rate_limit_cooldown_secs,
+            channel_thinking_effort: routing.channel_thinking_effort.clone(),
+            branch_thinking_effort: routing.branch_thinking_effort.clone(),
+            worker_thinking_effort: routing.worker_thinking_effort.clone(),
+            compactor_thinking_effort: routing.compactor_thinking_effort.clone(),
+            cortex_thinking_effort: routing.cortex_thinking_effort.clone(),
         },
         tuning: TuningSection {
             max_concurrent_branches: **rc.max_concurrent_branches.load(),
@@ -2025,6 +2040,11 @@ fn update_routing_table(doc: &mut toml_edit::DocumentMut, agent_idx: usize, rout
     if let Some(ref v) = routing.compactor { table["compactor"] = toml_edit::value(v.as_str()); }
     if let Some(ref v) = routing.cortex { table["cortex"] = toml_edit::value(v.as_str()); }
     if let Some(v) = routing.rate_limit_cooldown_secs { table["rate_limit_cooldown_secs"] = toml_edit::value(v as i64); }
+    if let Some(ref v) = routing.channel_thinking_effort { table["channel_thinking_effort"] = toml_edit::value(v.as_str()); }
+    if let Some(ref v) = routing.branch_thinking_effort { table["branch_thinking_effort"] = toml_edit::value(v.as_str()); }
+    if let Some(ref v) = routing.worker_thinking_effort { table["worker_thinking_effort"] = toml_edit::value(v.as_str()); }
+    if let Some(ref v) = routing.compactor_thinking_effort { table["compactor_thinking_effort"] = toml_edit::value(v.as_str()); }
+    if let Some(ref v) = routing.cortex_thinking_effort { table["cortex_thinking_effort"] = toml_edit::value(v.as_str()); }
     Ok(())
 }
 

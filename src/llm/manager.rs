@@ -6,6 +6,7 @@
 
 use crate::config::LlmConfig;
 use crate::error::{LlmError, Result};
+
 use anyhow::Context as _;
 use std::collections::HashMap;
 use std::sync::Arc;
