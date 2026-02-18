@@ -68,9 +68,9 @@ pub struct LlmConfig {
 impl LlmConfig {
     /// Check if any provider key is configured.
     pub fn has_any_key(&self) -> bool {
-        self.anthropic_key.is_some() 
-            || self.openai_key.is_some() 
-            || self.openrouter_key.is_some() 
+        self.anthropic_key.is_some()
+            || self.openai_key.is_some()
+            || self.openrouter_key.is_some()
             || self.zhipu_key.is_some()
             || self.groq_key.is_some()
             || self.together_key.is_some()
@@ -906,6 +906,11 @@ struct TomlRoutingConfig {
     compactor: Option<String>,
     cortex: Option<String>,
     rate_limit_cooldown_secs: Option<u64>,
+    channel_thinking_effort: Option<String>,
+    branch_thinking_effort: Option<String>,
+    worker_thinking_effort: Option<String>,
+    compactor_thinking_effort: Option<String>,
+    cortex_thinking_effort: Option<String>,
     #[serde(default)]
     task_overrides: HashMap<String, String>,
     fallbacks: Option<HashMap<String, Vec<String>>>,
@@ -1120,6 +1125,21 @@ fn resolve_routing(toml: Option<TomlRoutingConfig>, base: &RoutingConfig) -> Rou
         rate_limit_cooldown_secs: t
             .rate_limit_cooldown_secs
             .unwrap_or(base.rate_limit_cooldown_secs),
+        channel_thinking_effort: t
+            .channel_thinking_effort
+            .unwrap_or_else(|| base.channel_thinking_effort.clone()),
+        branch_thinking_effort: t
+            .branch_thinking_effort
+            .unwrap_or_else(|| base.branch_thinking_effort.clone()),
+        worker_thinking_effort: t
+            .worker_thinking_effort
+            .unwrap_or_else(|| base.worker_thinking_effort.clone()),
+        compactor_thinking_effort: t
+            .compactor_thinking_effort
+            .unwrap_or_else(|| base.compactor_thinking_effort.clone()),
+        cortex_thinking_effort: t
+            .cortex_thinking_effort
+            .unwrap_or_else(|| base.cortex_thinking_effort.clone()),
     }
 }
 
@@ -1144,6 +1164,7 @@ impl Config {
         }
         // No config file — check if env vars can bootstrap
         std::env::var("ANTHROPIC_API_KEY").is_err()
+            && std::env::var("ANTHROPIC_OAUTH_TOKEN").is_err()
             && std::env::var("OPENAI_API_KEY").is_err()
             && std::env::var("OPENROUTER_API_KEY").is_err()
             && std::env::var("OPENCODE_ZEN_API_KEY").is_err()
