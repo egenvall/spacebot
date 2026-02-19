@@ -713,10 +713,21 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
     chunks
 }
 
-/// Sanitize an emoji string for Slack reactions (remove colons, lowercase).
+/// Normalize an emoji input into a Slack reaction shortcode.
+///
+/// Slack's `reactions.add` API requires shortcode names (e.g. `thumbsup`)
+/// while other platforms accept unicode. The LLM sends unicode since Discord
+/// and Telegram expect it, so we convert here at the adapter boundary.
 fn sanitize_reaction_name(emoji: &str) -> String {
-    emoji
-        .trim()
+    let trimmed = emoji.trim();
+
+    if let Some(found) = emojis::get(trimmed) {
+        if let Some(shortcode) = found.shortcode() {
+            return shortcode.to_string();
+        }
+    }
+
+    trimmed
         .trim_start_matches(':')
         .trim_end_matches(':')
         .to_lowercase()
